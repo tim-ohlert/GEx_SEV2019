@@ -1,0 +1,94 @@
+library(tidyverse)
+library(codyn)
+library(plyr)
+library(dplyr)
+library(vegan)
+
+#import the cleaned data that includes species covers
+dat <- read.csv("~/All_Cleaned_April2019_V2.csv")
+
+
+#label the rank of all of the species
+#make sure that if there is a tie for the dominant species, they both get a rank of "1"
+datrank<-dat%>%
+  group_by(site, block, trt, genus_species)%>%
+  summarise(relcov=mean(relcov))%>%
+  ungroup()%>%
+  mutate(exp_unit=paste(site, block, trt, sep='::'))
+
+rankOrder <- datrank%>%
+  group_by(exp_unit)%>%
+  mutate(ranks = rank(-relcov, ties.method= "min"))%>%
+  ungroup()%>%
+  select(site, block,trt, genus_species, ranks, relcov)
+
+
+#create a site/block/species column to merge with later
+rankOrder$michael_scott <- paste(rankOrder$site, rankOrder$block, rankOrder$genus_species, sep = "_")
+#subset down to only the dominant species in the grazed
+dominants.in.grazed <- rankOrder %>%
+  subset(ranks == "1" & trt == "G")
+
+#merges on the rank of the (grazed) dominant species in ungrazed plots
+dominants.w.ungrazed.rank.dirty <- merge(dominants.in.grazed, rankOrder, by = c("michael_scott"))
+#reduce a bunch of repeated lines that occur during the merger
+dominants.w.ungrazed.rank.lessdirty <- subset(dominants.w.ungrazed.rank.dirty, trt.x == "G" & trt.y == "U")
+#rename variables to things that make more sense
+  dominants.w.ungrazed.rank.lessdirty$site <- dominants.w.ungrazed.rank.lessdirty$site.x
+  dominants.w.ungrazed.rank.lessdirty$block <- dominants.w.ungrazed.rank.lessdirty$block.x
+  dominants.w.ungrazed.rank.lessdirty$genus_species <- dominants.w.ungrazed.rank.lessdirty$genus_species.x
+  dominants.w.ungrazed.rank.lessdirty$rank_G <- dominants.w.ungrazed.rank.lessdirty$ranks.x  
+  dominants.w.ungrazed.rank.lessdirty$rank_U <- dominants.w.ungrazed.rank.lessdirty$ranks.y
+#create dataframe that only has the useful variables
+dominants.w.ungrazed.rank.cleaned <-  subset(dominants.w.ungrazed.rank.lessdirty, select = c("michael_scott", "site", "block", "genus_species", "rank_G", "rank_U"))  
+
+#by completing this merger, the dataframe now has rows for species that were dominant in grazed and non-existent in ungrazed. The ungrazed columns for these species are populated with "NA"
+dominants.w.ungrazed.rank.including.na <- merge(dominants.w.ungrazed.rank.cleaned, dominants.in.grazed, by = "michael_scott", all = TRUE)  
+  dominants.w.ungrazed.rank.including.na$site <- dominants.w.ungrazed.rank.including.na$site.y  
+  dominants.w.ungrazed.rank.including.na$block <- dominants.w.ungrazed.rank.including.na$block.y  
+  dominants.w.ungrazed.rank.including.na$genus_species <- dominants.w.ungrazed.rank.including.na$genus_species.y
+  dominants.w.ungrazed.rank.including.na$rank_G <- dominants.w.ungrazed.rank.including.na$ranks
+
+#extract only the useful columns
+dominant.ranks.w.na <- subset(dominants.w.ungrazed.rank.including.na, select = c("michael_scott", "site", "block", "genus_species", "rank_G", "rank_U"))
+#create column to merge with later
+dominant.ranks.w.na$dwight_schrute <- paste(dominant.ranks.w.na$site, dominant.ranks.w.na$block, sep="_")
+  
+#make numbers to fill NA's with. NAs will be filled with the species richness of the ungrazed plot plus 1
+fill.rank <- dat %>%
+  subset(trt == "U") %>%
+ddply( c("site", "block"),
+      function(x)data.frame(
+        rank_for_fill = length(x$genus_species)+1
+      ))
+#make column to merge with
+fill.rank$dwight_schrute <- paste(fill.rank$site, fill.rank$block, sep="_")  
+#merge columns by dwight_schrute
+pre.na.fill <-  merge(dominant.ranks.w.na, fill.rank, by = "dwight_schrute")
+#fill NAs in rank_U column with the rank_for_fill column
+pre.na.fill$rank_U[is.na(pre.na.fill$rank_U)] <- pre.na.fill$rank_for_fill
+
+#rename the variables
+pre.na.fill$site <- pre.na.fill$site.x
+pre.na.fill$block <- pre.na.fill$block.x
+
+#make a clean data frame
+clean.data <- subset(pre.na.fill, select = c("site", "block", "genus_species", "rank_G", "rank_U"))
+
+#calculate dominance change as ungrazed rank minus grazed rank
+clean.data$rank_change_domspecies <- clean.data$rank_U - 1
+
+#summarize by block
+summary.by.block <- ddply(clean.data, c("site", "block"),
+      function(x)data.frame(
+        rank_change_domspecies = mean(x$rank_change_domspecies)
+      ))
+
+#summarize by site
+summary.by.site <- ddply(summary.by.block, c("site"),
+                 function(x)data.frame(
+                   rank_change_domspecies = mean(x$rank_change_domspecies)
+                 ))
+                 
+write.csv(summary.by.block, "blocklevel_domspecies_rankchange.csv")
+write.csv(summary.by.site, "sitelevel_domspecies_rankchange.csv")
